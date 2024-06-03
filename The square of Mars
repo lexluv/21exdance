@@ -1,0 +1,19 @@
+
+
+# Load planetary data
+loader = Loader('/path/to/de421.bsp')  # Use the latest version of DE421
+planets = loader('de421.bsp')
+
+# Calculate the position of Mars
+mars = planets['mars barycenter']
+
+# Get the current date and time
+eph = planets.at(EarthNow())
+
+# Calculate Mars' distance from the sun
+distance = eph.observe(mars).distance()
+
+# Calculate the square of Mars' distance
+square = distance.au**2
+
+print(f"The square of Mars' distance from the sun is {square:.2f} AU^2")
