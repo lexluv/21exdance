@@ -1,0 +1,3 @@
+# Windows-only files: keep CRLF and the UTF-8 BOM byte-for-byte (Windows PowerShell 5.1 needs the BOM for Cyrillic text).
+*.ps1 -text
+*.bat -text
