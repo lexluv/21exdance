@@ -240,6 +240,82 @@ function Test-IsWifiAdapter($Adapter) {
     return ($null -ne $Adapter -and [int]$Adapter.NdisPhysicalMedium -eq 9)
 }
 
+# ---------------------------------------------------------------- диагностика
+
+# Выполняет блок в отдельном процессе с ограничением по времени:
+# запросы к хранилищу (Get-PhysicalDisk) на некоторых ПК зависают намертво.
+function Invoke-WithTimeout {
+    param([scriptblock]$ScriptBlock, [object[]]$ArgumentList = @(), [int]$Seconds = 20)
+    $job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+    try {
+        if (Wait-Job -Job $job -Timeout $Seconds) { return (Receive-Job -Job $job -ErrorAction SilentlyContinue) }
+        return $null
+    } finally {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Физические диски и буквы томов на них. $null — если запрос не уложился в таймаут.
+function Get-DiskInventory {
+    return Invoke-WithTimeout -Seconds 25 -ScriptBlock {
+        $letters = @{}
+        foreach ($p in @(Get-Partition -ErrorAction SilentlyContinue)) {
+            if ($p.DriveLetter -and [string]$p.DriveLetter -match '^[A-Z]$') {
+                $letters[[string]$p.DiskNumber] = [string]$letters[[string]$p.DiskNumber] + [string]$p.DriveLetter
+            }
+        }
+        foreach ($d in @(Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
+            $media = [string]$d.MediaType
+            if ($media -eq '3') { $media = 'HDD' } elseif ($media -eq '4') { $media = 'SSD' }
+            $bus = [string]$d.BusType
+            if ($bus -eq '17') { $bus = 'NVMe' } elseif ($bus -eq '11') { $bus = 'SATA' } elseif ($bus -eq '7') { $bus = 'USB' }
+            if ($media -notmatch 'SSD|HDD') {
+                if ($bus -eq 'NVMe') { $media = 'SSD' }
+                elseif ($d.SpindleSpeed -eq 0) { $media = 'SSD' }
+                elseif ($d.SpindleSpeed -gt 0 -and $d.SpindleSpeed -lt 4294967295) { $media = 'HDD' }
+            }
+            [pscustomobject]@{
+                Disk    = [string]$d.DeviceId
+                Letters = [string]$letters[[string]$d.DeviceId]
+                Model   = [string]$d.FriendlyName
+                Type    = $media
+                Bus     = $bus
+                SizeGB  = [math]::Round($d.Size / 1GB)
+                Health  = [string]$d.HealthStatus
+            }
+        }
+    }
+}
+
+function Get-NvidiaSmiPath {
+    $cmd = Get-Command 'nvidia-smi.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    foreach ($p in @((Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'),
+                     (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVSMI\nvidia-smi.exe'))) {
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    return $null
+}
+
+function Test-PrivateIPv4([string]$Address) {
+    return ($Address -match '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|127\.|169\.254\.)')
+}
+
+# Убирает из готового отчёта имя пользователя, имя ПК и MAC-адреса.
+function Protect-ReportFile([string]$Path) {
+    $text = [IO.File]::ReadAllText($Path)
+    $names = @($env:USERNAME, $env:COMPUTERNAME, $env:USERDOMAIN) |
+        Where-Object { $_ -and $_.Length -ge 2 } | Select-Object -Unique | Sort-Object Length -Descending
+    foreach ($n in $names) {
+        $text = [regex]::Replace($text, '(?<!\w)' + [regex]::Escape($n) + '(?!\w)', '<скрыто>',
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    $text = [regex]::Replace($text, '(?<![0-9A-Fa-f])([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])', '<MAC>')
+    $text = [regex]::Replace($text, 'S-1-5-21(-\d+)+', '<SID>')
+    [IO.File]::WriteAllText($Path, $text, (New-Object Text.UTF8Encoding($true)))
+    return $text
+}
+
 # ---------------------------------------------------------------- поиск игры
 
 function Get-GameNamePattern([string]$ExeName) {

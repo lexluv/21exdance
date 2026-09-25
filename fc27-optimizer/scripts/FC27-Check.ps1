@@ -20,6 +20,7 @@ param(
     [string]$ExeName = 'FC27.exe',
     [ValidateRange(5, 300)] [int]$Seconds = 20,
     [switch]$NoLoadTest,
+    [switch]$NoTranscript,
     [switch]$NoPause
 )
 
@@ -28,7 +29,9 @@ param(
 $desktop = [Environment]::GetFolderPath('Desktop')
 $reportPath = Join-Path $desktop ('FC27-check-{0}.txt' -f (Get-Date -Format 'yyyyMMdd-HHmm'))
 $transcribing = $false
-try { Start-Transcript -Path $reportPath -ErrorAction Stop | Out-Null; $transcribing = $true } catch { }
+if (-not $NoTranscript) {
+    try { Start-Transcript -Path $reportPath -ErrorAction Stop | Out-Null; $transcribing = $true } catch { }
+}
 
 Write-Banner 'FC 27 Optimizer — диагностика ПК и интернета (ничего не меняет)'
 
@@ -40,6 +43,9 @@ Invoke-Step 'Система' {
 
     $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
     Write-Info ('Процессор: {0} — {1} ядер / {2} потоков' -f $cpu.Name.Trim(), $cpu.NumberOfCores, $cpu.NumberOfLogicalProcessors)
+    $board = Get-CimInstance -ClassName Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1
+    $bios = Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($board) { Write-Info ('Материнская плата: {0} {1}, BIOS {2}' -f $board.Manufacturer, $board.Product, $bios.SMBIOSBIOSVersion) }
 
     $mem = @(Get-CimInstance -ClassName Win32_PhysicalMemory)
     $totalGb = [math]::Round((($mem | Measure-Object -Property Capacity -Sum).Sum) / 1GB)
@@ -52,7 +58,14 @@ Invoke-Step 'Система' {
     if ($mem.Count -eq 1 -and ($typeName -eq 'DDR4' -or $typeName -eq 'DDR5')) {
         Write-Warn 'Одна планка памяти = одноканальный режим. Вторая такая же планка заметно поднимет FPS и уберёт фризы.'
     }
-    if (($typeName -eq 'DDR4' -and $speed -le 2666) -or ($typeName -eq 'DDR5' -and $speed -le 4800)) {
+    # Intel 10-го поколения на платах без Z-чипсета (B460/H410/H470) не разгоняет память
+    # выше официального максимума процессора: i3/i5 — 2666, i7/i9 — 2933 МГц.
+    $memCap = $null
+    if ($cpu.Name -match 'i[35]-10\d{3}') { $memCap = 2666 } elseif ($cpu.Name -match 'i[79]-10\d{3}') { $memCap = 2933 }
+    $zBoard = ($board -and $board.Product -match 'Z[45]\d0')
+    if ($memCap -and -not $zBoard -and $speed -ge $memCap) {
+        Write-Ok ('Память на {0} МГц — это максимум для этого процессора на плате без Z-чипсета. Всё в порядке.' -f $speed)
+    } elseif (($typeName -eq 'DDR4' -and $speed -le 2666) -or ($typeName -eq 'DDR5' -and $speed -le 4800)) {
         Write-Warn ('Память на базовой частоте {0} МГц. Если планки рассчитаны на большее — включите XMP/EXPO в BIOS.' -f $speed)
     }
 
@@ -120,12 +133,17 @@ Invoke-Step 'Игра' {
     $freeGb = [math]::Round($drive.AvailableFreeSpace / 1GB)
     if ($freeGb -lt 20) { Write-Warn ('На диске {0}: свободно {1} ГБ — мало для обновлений и кэша шейдеров' -f $letter, $freeGb) }
     else { Write-Info ('На диске {0}: свободно {1} ГБ' -f $letter, $freeGb) }
-    try {
-        $part = Get-Partition -DriveLetter $letter -ErrorAction Stop
-        $disk = Get-PhysicalDisk -ErrorAction Stop | Where-Object { $_.DeviceId -eq [string]$part.DiskNumber } | Select-Object -First 1
-        if ($disk.MediaType -eq 'HDD') { Write-Bad 'Игра стоит на HDD — перенесите на SSD: исчезнут долгие загрузки и подтормаживания.' }
-        elseif ($disk.MediaType -eq 'SSD') { Write-Ok 'Игра стоит на SSD' }
-    } catch { }
+    $disks = @(Get-DiskInventory)
+    $disk = $disks | Where-Object { $_ -and $_.Letters -match $letter } | Select-Object -First 1
+    if (-not $disk) {
+        Write-Info 'Тип диска определить не удалось (Windows не ответила вовремя).'
+    } elseif ($disk.Type -eq 'HDD') {
+        Write-Bad ('Игра стоит на HDD ({0}) — перенесите на SSD: исчезнут долгие загрузки и подтормаживания.' -f $disk.Model)
+    } elseif ($disk.Type -eq 'SSD') {
+        Write-Ok ('Игра стоит на SSD: {0} ({1})' -f $disk.Model, $disk.Bus)
+    } else {
+        Write-Info ('Диск с игрой: {0} ({1}), тип не определён' -f $disk.Model, $disk.Bus)
+    }
 }
 
 # ------------------------------------------------------------------ Фоновые программы
@@ -263,6 +281,7 @@ $targets = [ordered]@{}
 if ($script:Gateway) { $targets[('Роутер ' + $script:Gateway)] = $script:Gateway }
 $targets['Cloudflare 1.1.1.1'] = '1.1.1.1'
 $targets['Google 8.8.8.8'] = '8.8.8.8'
+$targets['Яндекс 77.88.8.8'] = '77.88.8.8'
 $routerKey = $null
 if ($script:Gateway) { $routerKey = 'Роутер ' + $script:Gateway }
 
