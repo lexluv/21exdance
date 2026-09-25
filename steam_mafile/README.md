@@ -26,6 +26,24 @@ python -m steam_mafile --out maFiles
 1. Ввести логин и пароль (пароль не отображается при вводе).
 2. Ввести код Steam Guard из письма на почте (если у аккаунта включён
    email-Guard).
+
+### Автовыгрузка кода из почты (Outlook и др.)
+
+Чтобы софт сам доставал код Steam Guard из почтового ящика по IMAP:
+
+```bash
+python -m steam_mafile --imap-email you@outlook.com
+```
+
+Пароль почты спросит скрытым вводом (или задай `--imap-password`). IMAP-сервер
+определяется по домену автоматически (outlook/hotmail/live → `outlook.office365.com`,
+gmail, yandex, mail.ru и др.); для нестандартного домена укажи `--imap-host`
+(и при необходимости `--imap-port`). Софт ждёт письмо от `steampowered.com` и
+достаёт из него 5-значный код; если не удалось — предложит ввести код вручную.
+
+> Outlook/Office365: Microsoft часто отключает вход по обычному паролю (basic
+> auth) для IMAP. Тогда включи IMAP в настройках почты и используй
+> **app password** (при включённом 2FA) — обычный пароль работать не будет.
 3. Софт привязывает аутентификатор и **сразу показывает revocation code**
    (`R#####`) — сохраните его, без него нельзя отвязать аутентификатор.
 4. Ввести код активации из SMS (Steam присылает его на привязанный телефон).
@@ -55,6 +73,7 @@ JSON, совместимый со Steam Desktop Authenticator: `shared_secret`,
 | `crypto.py` | RSA-шифрование пароля, генерация TOTP-кода Steam Guard, device id |
 | `protobuf.py` | минимальный кодек protobuf для запросов к WebAPI |
 | `client.py` | клиент flow: RSA-ключ → вход → код с почты → токены → привязка |
+| `email_fetch.py` | автовыгрузка кода Steam Guard из почты по IMAP |
 | `mafile.py` | сборка и сохранение `.maFile` |
 | `cli.py` | интерактивный CLI |
 
