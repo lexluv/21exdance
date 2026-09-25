@@ -30,7 +30,7 @@ function Show-Table($Data) {
 }
 
 function Show-Lines([string[]]$Lines) {
-    foreach ($l in $Lines) { if ($l -and $l.Trim()) { Write-Host ('    ' + $l.TrimEnd()) } }
+    foreach ($l in $Lines) { if ($l -and $l.Trim()) { Write-Host ('    ' + (Repair-ConsoleText $l).TrimEnd()) } }
 }
 
 function Format-RegValue([string]$Path, [string]$Name) {
@@ -114,7 +114,7 @@ Invoke-Step 'Видеокарта и мониторы' {
 
 Invoke-Step 'Диски' {
     $inv = @(Get-DiskInventory)
-    if ($inv.Count -gt 0 -and $inv[0]) { Show-Table $inv } else { Write-Warn 'Windows не ответила на запрос о дисках за 25 секунд' }
+    if ($inv.Count -gt 0 -and $inv[0]) { Show-Table ($inv | Select-Object Disk, Letters, Model, Type, Bus, SizeGB, Health) } else { Write-Warn 'Windows не ответила на запрос о дисках за 25 секунд' }
     Show-Table ([IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady -and $_.DriveType -eq [IO.DriveType]::Fixed } | Select-Object `
         @{ n = 'Том'; e = { $_.Name } },
         @{ n = 'ФС'; e = { $_.DriveFormat } },
@@ -184,31 +184,37 @@ Invoke-Step 'Игра' {
     $ea = Join-Path $env:ProgramFiles 'Electronic Arts\EA Desktop\EA Desktop\EADesktop.exe'
     if (Test-Path -LiteralPath $ea) { Write-Info ('EA app: ' + (Get-Item -LiteralPath $ea).VersionInfo.ProductVersion) }
 
-    # Настройки графики игры: Документы\FC 27\*.ini (fcsetup.ini и т. п.)
-    $docs = [Environment]::GetFolderPath('MyDocuments')
+    # Настройки графики игры (fcsetup.ini и т. п.): в прошлых частях — «Документы\FC xx»,
+    # но «Документы» бывают перенесены в OneDrive, а новые части могут писать в AppData.
     $pattern = Get-GameNamePattern $ExeName
-    $dirs = @(Get-ChildItem -LiteralPath $docs -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $pattern })
-    foreach ($d in $dirs) {
-        foreach ($ini in @(Get-ChildItem -LiteralPath $d.FullName -Filter '*.ini' -File -ErrorAction SilentlyContinue)) {
-            if ($ini.Length -gt 16KB) { continue }
-            Write-Info ('Файл настроек игры: Документы\{0}\{1}' -f $d.Name, $ini.Name)
-            Show-Lines @(Get-Content -LiteralPath $ini.FullName -ErrorAction SilentlyContinue)
+    $roots = @([Environment]::GetFolderPath('MyDocuments'), (Join-Path $env:USERPROFILE 'Documents'),
+               (Join-Path $env:USERPROFILE 'OneDrive\Documents'), $env:LOCALAPPDATA, $env:APPDATA) |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+    $found = 0
+    foreach ($root in $roots) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $pattern })) {
+            Write-Info ('Папка игры: ' + $d.FullName)
+            foreach ($cfg in @(Get-ChildItem -LiteralPath $d.FullName -Include '*.ini', '*.cfg' -File -Recurse -Depth 2 -ErrorAction SilentlyContinue)) {
+                if ($cfg.Length -gt 16KB) { continue }
+                $found++
+                Write-Info ('Файл настроек: ' + $cfg.FullName)
+                Show-Lines @(Get-Content -LiteralPath $cfg.FullName -ErrorAction SilentlyContinue)
+            }
         }
     }
-    if ($dirs.Count -eq 0) { Write-Info 'Папка настроек игры в «Документах» не найдена' }
+    if ($found -eq 0) { Write-Info 'Файл настроек графики игры не найден' }
 }
 
 Invoke-Step 'Сбои за последние 30 дней' {
     $since = (Get-Date).AddDays(-30)
     $game = [IO.Path]::GetFileNameWithoutExtension($ExeName)
-    try {
-        $crashes = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $since } -ErrorAction Stop |
-            Where-Object { [string]$_.Properties[0].Value -match $game })
-        Write-Info ('Вылеты {0}: {1}' -f $ExeName, $crashes.Count)
-        foreach ($c in ($crashes | Select-Object -First 5)) {
-            Write-Info ('  {0:dd.MM HH:mm} модуль {1}, код {2}' -f $c.TimeCreated, $c.Properties[3].Value, $c.Properties[6].Value)
-        }
-    } catch { Write-Info 'Вылеты игры: 0' }
+    # SilentlyContinue, а не Stop: «событий не найдено» иначе мусорит в отчёте строками TerminatingError.
+    $crashes = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $since } -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.Properties[0].Value -match $game })
+    Write-Info ('Вылеты {0}: {1}' -f $ExeName, $crashes.Count)
+    foreach ($c in ($crashes | Select-Object -First 5)) {
+        Write-Info ('  {0:dd.MM HH:mm} модуль {1}, код {2}' -f $c.TimeCreated, $c.Properties[3].Value, $c.Properties[6].Value)
+    }
 
     $checks = @(
         @('Сбросы видеодрайвера (TDR)', @{ LogName = 'System'; ProviderName = 'Display'; Id = 4101; StartTime = $since }),
@@ -217,8 +223,7 @@ Invoke-Step 'Сбои за последние 30 дней' {
         @('Внезапные отключения питания', @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Power'; Id = 41; StartTime = $since })
     )
     foreach ($c in $checks) {
-        $n = 0
-        try { $n = @(Get-WinEvent -FilterHashtable $c[1] -ErrorAction Stop).Count } catch { }
+        $n = @(Get-WinEvent -FilterHashtable $c[1] -ErrorAction SilentlyContinue).Count
         if ($n -gt 0) { Write-Warn ('{0}: {1}' -f $c[0], $n) } else { Write-Info ('{0}: 0' -f $c[0]) }
     }
 }
@@ -294,9 +299,9 @@ Invoke-Step 'Сеть: настройки сетевой карты' {
         Write-Host ('  {0} — {1}' -f $a.Name, $a.InterfaceDescription) -ForegroundColor White
         Show-Table ($a | Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Select-Object `
             @{ n = 'Параметр'; e = { $_.DisplayName } },
-            @{ n = 'Значение'; e = { $_.DisplayValue } },
+            @{ n = 'Значение'; e = { if ($_.RegistryKeyword -eq 'NetworkAddress' -and $_.DisplayValue) { '(задан вручную, скрыт)' } else { $_.DisplayValue } } },
             @{ n = 'Ключ'; e = { $_.RegistryKeyword } },
-            @{ n = 'Код'; e = { $_.RegistryValue -join ',' } })
+            @{ n = 'Код'; e = { if ($_.RegistryKeyword -eq 'NetworkAddress') { '' } else { $_.RegistryValue -join ',' } } })
         $classKey = Get-AdapterClassKey $a.InterfaceGuid
         if ($classKey) { Write-Info ('PnPCapabilities (24 = не отключать ради экономии): ' + (Format-RegValue $classKey 'PnPCapabilities')) }
         $pm = $a | Get-NetAdapterPowerManagement -ErrorAction SilentlyContinue

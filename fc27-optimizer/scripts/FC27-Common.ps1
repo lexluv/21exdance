@@ -297,6 +297,12 @@ function Get-NvidiaSmiPath {
     return $null
 }
 
+# Часть утилит (netsh в Windows 11 24H2) пишет UTF-8, а консоль читает их как CP866 — получается «╨Ч╨░╨┐...».
+function Repair-ConsoleText([string]$Text) {
+    if ($Text -notmatch '[╨╤]') { return $Text }
+    try { return [Text.Encoding]::UTF8.GetString([Text.Encoding]::GetEncoding(866).GetBytes($Text)) } catch { return $Text }
+}
+
 function Test-PrivateIPv4([string]$Address) {
     return ($Address -match '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|127\.|169\.254\.)')
 }
@@ -304,13 +310,18 @@ function Test-PrivateIPv4([string]$Address) {
 # Убирает из готового отчёта имя пользователя, имя ПК и MAC-адреса.
 function Protect-ReportFile([string]$Path) {
     $text = [IO.File]::ReadAllText($Path)
-    $names = @($env:USERNAME, $env:COMPUTERNAME, $env:USERDOMAIN) |
+    # Папка профиля может называться не так, как учётная запись (например, у аккаунта Microsoft).
+    $profileLeaf = $null
+    if ($env:USERPROFILE) { $profileLeaf = Split-Path -Path $env:USERPROFILE -Leaf }
+    $names = @($env:USERNAME, $profileLeaf, $env:COMPUTERNAME, $env:USERDOMAIN) |
         Where-Object { $_ -and $_.Length -ge 2 } | Select-Object -Unique | Sort-Object Length -Descending
     foreach ($n in $names) {
         $text = [regex]::Replace($text, '(?<!\w)' + [regex]::Escape($n) + '(?!\w)', '<скрыто>',
             [Text.RegularExpressions.RegexOptions]::IgnoreCase)
     }
     $text = [regex]::Replace($text, '(?<![0-9A-Fa-f])([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])', '<MAC>')
+    # MAC без разделителей (параметр адаптера «Network Address»); хвост GUID после «-» не трогаем.
+    $text = [regex]::Replace($text, '(?<![0-9A-Fa-f-])(?=[0-9]*[A-Fa-f])[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])', '<MAC>')
     $text = [regex]::Replace($text, 'S-1-5-21(-\d+)+', '<SID>')
     [IO.File]::WriteAllText($Path, $text, (New-Object Text.UTF8Encoding($true)))
     return $text

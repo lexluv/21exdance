@@ -199,7 +199,7 @@ Invoke-Step 'Подключение к интернету' {
 
     if ($script:IsWifi) {
         Write-Warn 'Подключение по Wi-Fi. Кабель (Ethernet) — самый действенный способ убрать скачки пинга.'
-        $wlan = (& netsh.exe wlan show interfaces 2>$null) | Out-String
+        $wlan = Repair-ConsoleText ((& netsh.exe wlan show interfaces 2>$null) | Out-String)
         $signal = [regex]::Match($wlan, '(\d{1,3})\s*%')
         $band = [regex]::Match($wlan, '(?im)^\s*(Band|Диапазон)\s*:\s*(.+?)\s*$')
         $channel = [regex]::Match($wlan, '(?im)^\s*(Channel|Канал)\s*:\s*(\d+)')
